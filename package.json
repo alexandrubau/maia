@@ -1,0 +1,35 @@
+{
+	"name": "maia",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=22"
+	},
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"start": "node --env-file=.env dist/server.mjs",
+		"check": "biome check .",
+		"check:fix": "biome check --write .",
+		"check:types": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@flue/runtime": "^2.2.2",
+		"hono": "^4.12.32"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.15",
+		"@flue/cli": "^2.2.2",
+		"@flue/vite": "^2.2.2",
+		"@types/node": "^22.10.10",
+		"typescript": "^7.0.2",
+		"vite": "^8.0.14"
+	},
+	"allowScripts": {
+		"@google/genai@2.21.0": true,
+		"core-js-pure@3.50.0": true,
+		"esbuild@0.28.2": true,
+		"fsevents@2.3.3": true,
+		"protobufjs@7.6.6": true
+	}
+}
