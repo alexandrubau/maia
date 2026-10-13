@@ -1,0 +1,64 @@
+import { init } from '@flue/runtime';
+import { createWhapprClient } from '@whappr/client';
+import { createWhapprChannel, type Message } from '@whappr/flue';
+import { WhatsAppAssistant } from '../agents/whatsapp.ts';
+
+export const client = createWhapprClient({
+  baseUrl: requireEnv('WHAPPR_GATEWAY_URL'),
+  secret: requireEnv('WHAPPR_SECRET_KEY'),
+});
+
+export const channel = createWhapprChannel({
+  secret: requireEnv('WHAPPR_SECRET_KEY'),
+
+  // Path: /channels/whappr/webhook
+  async event({ event }) {
+    if (event.type !== 'message.received') return;
+
+    // The gateway waits 5 seconds for this webhook and never retries, so
+    // acknowledge right away and reply in the background.
+    const message = event.data;
+    enqueue(message.chat.id, () => reply(message));
+  },
+});
+
+async function reply(message: Message) {
+  const agent = init(WhatsAppAssistant, { id: channel.instanceId(message.chat.id) });
+  const receipt = await agent.dispatch({
+    message: {
+      kind: 'signal',
+      type: 'whappr.message.received',
+      // `text` is the body or a media caption; media-only messages get a placeholder.
+      body: message.text ?? `[${message.kind} message]`,
+      attributes: {
+        messageId: message.id,
+        kind: message.kind,
+        sender: message.sender.name ?? message.sender.id,
+      },
+    },
+  });
+
+  const { text } = await agent.read(receipt);
+  if (text) await client.messages.send({ to: message.chat.id, text });
+}
+
+// One reply at a time per chat. A message dispatched while the agent is busy
+// joins the running response, and every joined read returns that same reply,
+// so it would be sent once per joined message.
+const queues = new Map<string, Promise<void>>();
+
+function enqueue(chatId: string, task: () => Promise<void>) {
+  const next = (queues.get(chatId) ?? Promise.resolve())
+    .then(task)
+    .catch((error) => console.error(`[whappr] reply to chat ${chatId} failed:`, error));
+  queues.set(chatId, next);
+  next.finally(() => {
+    if (queues.get(chatId) === next) queues.delete(chatId);
+  });
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing the ${name} environment variable.`);
+  return value;
+}

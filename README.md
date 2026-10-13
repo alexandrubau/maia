@@ -6,9 +6,10 @@ A [Flue](https://flueframework.com) agent project.
 
 ```sh
 npm install
+cp .env.dist .env
 ```
 
-Then add a model provider API key to `.env` (any [provider Pi supports](https://pi.dev/docs/latest/providers#api-keys)).
+Then fill in the empty values in `.env`. `.env.dist` documents every variable the app reads and is the default `.env` of the Docker image.
 
 ## Talk to your agent
 

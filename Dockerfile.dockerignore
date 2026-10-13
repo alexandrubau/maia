@@ -1,0 +1,12 @@
+# Allowlist: ignore everything, then re-include only what the build needs.
+# Keeps secrets (.env), local state (data/) and host-built node_modules/dist
+# out of the build context by default, including files added later.
+*
+
+!package.json
+!package-lock.json
+!tsconfig.json
+!vite.config.ts
+!flue.config.ts
+!src/
+!.env.dist
