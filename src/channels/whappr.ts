@@ -24,22 +24,42 @@ export const channel = createWhapprChannel({
 
 async function reply(message: Message) {
   const agent = init(WhatsAppAssistant, { id: channel.instanceId(message.chat.id) });
-  const receipt = await agent.dispatch({
-    message: {
-      kind: 'signal',
-      type: 'whappr.message.received',
-      // `text` is the body or a media caption; media-only messages get a placeholder.
-      body: message.text ?? `[${message.kind} message]`,
-      attributes: {
-        messageId: message.id,
-        kind: message.kind,
-        sender: message.sender.name ?? message.sender.id,
+  const receipt = await agent
+    .dispatch({
+      message: {
+        kind: 'signal',
+        type: 'whappr.message.received',
+        // `text` is the body or a media caption; media-only messages get a placeholder.
+        body: message.text ?? `[${message.kind} message]`,
+        attributes: {
+          messageId: message.id,
+          kind: message.kind,
+          sender: message.sender.name ?? message.sender.id,
+        },
       },
-    },
-  });
+    })
+    .catch((error) => {
+      console.error('[whappr] undeliverable message shape:', shapeOf(message));
+      throw error;
+    });
 
   const { text } = await agent.read(receipt);
   if (text) await client.messages.send({ to: message.chat.id, text });
+}
+
+// Field types only, never content: text and sender names are personal data.
+function shapeOf(message: Message) {
+  return {
+    keys: Object.keys(message),
+    id: typeof message.id,
+    kind: message.kind,
+    text: typeof message.text,
+    sender: message.sender && {
+      keys: Object.keys(message.sender),
+      id: typeof message.sender.id,
+      name: typeof message.sender.name,
+    },
+  };
 }
 
 // One reply at a time per chat. A message dispatched while the agent is busy
