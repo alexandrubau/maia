@@ -23,12 +23,20 @@ export const channel = createWhapprChannel({
     // acknowledge right away and reply in the background.
     const message = event.data;
 
+    // In a group, a message is addressed to the assistant when it tags the assistant, or
+    // replies to it without tagging anyone else ("@Ana did you see?" is for Ana).
+    const tagsOthers = message.mentions.some((mention) => !mention.isMe);
+    const repliesToMe = message.replyTo?.sender.isMe && !tagsOthers;
+    if (message.chat.type === 'group' && !message.mentionsMe && !repliesToMe) return;
+
+    const text = resolveMentions(message);
+
     // Commands skip the per-chat queue, so they answer even while the agent is busy.
-    const pending = commands.run(message.text ?? '', { message });
+    const pending = commands.run(text ?? '', { message });
     if (pending) {
       pending
-        .then(async (text) => {
-          if (text) await client.messages.send({ to: message.chat.id, text });
+        .then(async (reply) => {
+          if (reply) await send(message, reply);
         })
         .catch((error) =>
           console.error(`[whappr] command reply to chat ${message.chat.id} failed:`, error),
@@ -36,11 +44,11 @@ export const channel = createWhapprChannel({
       return;
     }
 
-    enqueue(message.chat.id, () => reply(message));
+    enqueue(message.chat.id, () => reply(message, text));
   },
 });
 
-async function reply(message: Message) {
+async function reply(message: Message, text: string | undefined) {
   const agent = init(WhatsAppAssistant, { id: channel.instanceId(message.chat.id) });
   const receipt = await agent
     .dispatch({
@@ -48,11 +56,18 @@ async function reply(message: Message) {
         kind: 'signal',
         type: 'whappr.message.received',
         // `text` is the body or a media caption; media-only messages get a placeholder.
-        body: message.text ?? `[${message.kind} message]`,
+        body: text ?? `[${message.kind} message]`,
         attributes: {
           messageId: message.id,
           kind: message.kind,
-          sender: message.sender.name ?? message.sender.id,
+          senderId: message.sender.id,
+          ...(message.sender.name && { senderName: message.sender.name }),
+          // The quoted message, so a tag on a reply to someone else has its context.
+          ...(message.replyTo?.text && {
+            quotedSenderId: message.replyTo.sender.id,
+            ...(message.replyTo.sender.name && { quotedSenderName: message.replyTo.sender.name }),
+            quotedText: message.replyTo.text,
+          }),
         },
       },
     })
@@ -61,8 +76,29 @@ async function reply(message: Message) {
       throw error;
     });
 
-  const { text } = await agent.read(receipt);
-  if (text) await client.messages.send({ to: message.chat.id, text });
+  const { text: answer } = await agent.read(receipt);
+  if (answer) await send(message, answer);
+}
+
+// In a group, the reply quotes the message it answers, so it's clear who it's for.
+function send(message: Message, text: string) {
+  return client.messages.send({
+    to: message.chat.id,
+    text,
+    ...(message.chat.type === 'group' && { replyTo: message.id }),
+  });
+}
+
+// WhatsApp writes a mention into the text as `@` and the part of its id before the `@`.
+// The assistant's own mention is dropped, so "@Maia /new" and "/new @Maia" read as "/new";
+// anyone else's becomes their name when WhatsApp knows it.
+function resolveMentions(message: Message) {
+  let text = message.text;
+  for (const { id, name, isMe } of message.mentions) {
+    const token = `@${id.split('@')[0]}`;
+    text = text?.replaceAll(token, isMe ? '' : name ? `@${name}` : token);
+  }
+  return text?.trim();
 }
 
 // Field types only, never content: text and sender names are personal data.
