@@ -2,6 +2,10 @@ import { init } from '@flue/runtime';
 import { createWhapprClient } from '@whappr/client';
 import { createWhapprChannel, type Message } from '@whappr/flue';
 import { WhatsAppAssistant } from '../agents/whatsapp.ts';
+import { ping } from '../commands/ping.ts';
+import { createCommands } from '../lib/commands.ts';
+
+const commands = createCommands<Message>([ping]);
 
 export const client = createWhapprClient({
   baseUrl: requireEnv('WHAPPR_GATEWAY_URL'),
@@ -18,6 +22,20 @@ export const channel = createWhapprChannel({
     // The gateway waits 5 seconds for this webhook and never retries, so
     // acknowledge right away and reply in the background.
     const message = event.data;
+
+    // Commands skip the per-chat queue, so they answer even while the agent is busy.
+    const pending = commands.run(message.text ?? '', { message });
+    if (pending) {
+      pending
+        .then(async (text) => {
+          if (text) await client.messages.send({ to: message.chat.id, text });
+        })
+        .catch((error) =>
+          console.error(`[whappr] command reply to chat ${message.chat.id} failed:`, error),
+        );
+      return;
+    }
+
     enqueue(message.chat.id, () => reply(message));
   },
 });
