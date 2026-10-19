@@ -2,10 +2,14 @@ import { init } from '@flue/runtime';
 import { createWhapprClient } from '@whappr/client';
 import { createWhapprChannel, type Message } from '@whappr/flue';
 import { WhatsAppAssistant } from '../agents/whatsapp.ts';
+import { newSession } from '../commands/new.ts';
 import { ping } from '../commands/ping.ts';
+import { resumeSession } from '../commands/resume.ts';
+import { listSessions } from '../commands/sessions.ts';
 import { createCommands } from '../lib/commands.ts';
+import * as sessions from '../lib/sessions.ts';
 
-const commands = createCommands<Message>([ping]);
+const commands = createCommands<Message>([ping, newSession, listSessions, resumeSession]);
 
 export const client = createWhapprClient({
   baseUrl: requireEnv('WHAPPR_GATEWAY_URL'),
@@ -30,9 +34,10 @@ export const channel = createWhapprChannel({
     if (message.chat.type === 'group' && !message.mentionsMe && !repliesToMe) return;
 
     const text = resolveMentions(message);
+    const chat = { channel: 'whappr', id: message.chat.id };
 
     // Commands skip the per-chat queue, so they answer even while the agent is busy.
-    const pending = commands.run(text ?? '', { message });
+    const pending = commands.run(text ?? '', { payload: message, chat });
     if (pending) {
       pending
         .then(async (reply) => {
@@ -44,19 +49,24 @@ export const channel = createWhapprChannel({
       return;
     }
 
-    enqueue(message.chat.id, () => reply(message, text));
+    // `text` is the body or a media caption; media-only messages get a placeholder.
+    const body = text ?? `[${message.kind} message]`;
+
+    // The session is picked now, not when the queue reaches the message, so a message
+    // sent before /new still lands in the session it was written for.
+    const session = sessions.touch(chat, body);
+    enqueue(message.chat.id, () => reply(message, body, session.id));
   },
 });
 
-async function reply(message: Message, text: string | undefined) {
-  const agent = init(WhatsAppAssistant, { id: channel.instanceId(message.chat.id) });
+async function reply(message: Message, body: string, sessionId: string) {
+  const agent = init(WhatsAppAssistant, { id: sessionId });
   const receipt = await agent
     .dispatch({
       message: {
         kind: 'signal',
         type: 'whappr.message.received',
-        // `text` is the body or a media caption; media-only messages get a placeholder.
-        body: text ?? `[${message.kind} message]`,
+        body,
         attributes: {
           messageId: message.id,
           kind: message.kind,
