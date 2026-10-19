@@ -1,10 +1,14 @@
 import { createProvider } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
-import { setProvider } from '@flue/runtime';
+import { observe, setProvider } from '@flue/runtime';
 import { createAgentRouter } from '@flue/runtime/routing';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { Hello } from './agents/hello.ts';
 import { channel as whappr } from './channels/whappr.ts';
+import { logFlueEvent, logger } from './lib/logger.ts';
+
+observe(logFlueEvent);
 
 // Agents use `ollama/gemma4:e2b`. Registered before any agent runs.
 setProvider(
@@ -40,6 +44,13 @@ setProvider(
 );
 
 const app = new Hono();
+
+// A route that throws. Agent and channel routers fall through to this handler too.
+app.onError((error, c) => {
+  if (error instanceof HTTPException) return error.getResponse();
+  logger.error({ error, method: c.req.method, path: c.req.path }, 'request failed');
+  return c.text('Internal Server Error', 500);
+});
 
 // Liveness probe for the Docker HEALTHCHECK and any orchestrator in front of it.
 app.get('/health', (c) => c.json({ ok: true }));

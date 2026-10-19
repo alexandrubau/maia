@@ -7,7 +7,10 @@ import { ping } from '../commands/ping.ts';
 import { resumeSession } from '../commands/resume.ts';
 import { listSessions } from '../commands/sessions.ts';
 import { createCommands } from '../lib/commands.ts';
+import { logger as root } from '../lib/logger.ts';
 import * as sessions from '../lib/sessions.ts';
+
+const logger = root.child({ module: 'whappr' });
 
 const commands = createCommands<Message>([ping, newSession, listSessions, resumeSession]);
 
@@ -43,9 +46,7 @@ export const channel = createWhapprChannel({
         .then(async (reply) => {
           if (reply) await send(message, reply);
         })
-        .catch((error) =>
-          console.error(`[whappr] command reply to chat ${message.chat.id} failed:`, error),
-        );
+        .catch((error) => logger.error({ error, chatId: message.chat.id }, 'command reply failed'));
       return;
     }
 
@@ -54,7 +55,7 @@ export const channel = createWhapprChannel({
 
     // The session is picked now, not when the queue reaches the message, so a message
     // sent before /new still lands in the session it was written for.
-    const session = sessions.touch(chat, body);
+    const session = await sessions.touch(chat, body);
     enqueue(message.chat.id, () => reply(message, body, session.id));
   },
 });
@@ -82,7 +83,7 @@ async function reply(message: Message, body: string, sessionId: string) {
       },
     })
     .catch((error) => {
-      console.error('[whappr] undeliverable message shape:', shapeOf(message));
+      logger.error({ message }, 'undeliverable message');
       throw error;
     });
 
@@ -111,21 +112,6 @@ function resolveMentions(message: Message) {
   return text?.trim();
 }
 
-// Field types only, never content: text and sender names are personal data.
-function shapeOf(message: Message) {
-  return {
-    keys: Object.keys(message),
-    id: typeof message.id,
-    kind: message.kind,
-    text: typeof message.text,
-    sender: message.sender && {
-      keys: Object.keys(message.sender),
-      id: typeof message.sender.id,
-      name: typeof message.sender.name,
-    },
-  };
-}
-
 // One reply at a time per chat. A message dispatched while the agent is busy
 // joins the running response, and every joined read returns that same reply,
 // so it would be sent once per joined message.
@@ -134,7 +120,7 @@ const queues = new Map<string, Promise<void>>();
 function enqueue(chatId: string, task: () => Promise<void>) {
   const next = (queues.get(chatId) ?? Promise.resolve())
     .then(task)
-    .catch((error) => console.error(`[whappr] reply to chat ${chatId} failed:`, error));
+    .catch((error) => logger.error({ error, chatId }, 'reply failed'));
   queues.set(chatId, next);
   next.finally(() => {
     if (queues.get(chatId) === next) queues.delete(chatId);

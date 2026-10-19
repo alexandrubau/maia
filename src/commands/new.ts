@@ -4,8 +4,8 @@ import * as sessions from '../lib/sessions.ts';
 export const newSession = defineCommand({
   name: 'new',
   description: 'Start a new session',
-  run: ({ chat }) => {
-    const { session, created } = sessions.start(chat);
+  run: async ({ chat }) => {
+    const { session, created } = await sessions.start(chat);
     return created
       ? `Started session ${session.ref}. Send /sessions to see earlier ones.`
       : `Session ${session.ref} is already new.`;

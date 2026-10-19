@@ -8,5 +8,6 @@
 !tsconfig.json
 !vite.config.ts
 !flue.config.ts
+!kysely.config.ts
 !src/
 !.env.dist

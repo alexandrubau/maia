@@ -4,10 +4,10 @@ import * as sessions from '../lib/sessions.ts';
 export const listSessions = defineCommand({
   name: 'sessions',
   description: 'List recent sessions',
-  run: ({ chat }) => {
-    const recent = sessions.list(chat);
+  run: async ({ chat }) => {
+    const recent = await sessions.list(chat);
     if (!recent.length) return 'No sessions yet. Send a message to start one.';
-    const current = sessions.current(chat)?.ref;
+    const current = (await sessions.current(chat))?.ref;
     return [
       ...recent.map(
         ({ ref, title, lastActiveAt }) =>

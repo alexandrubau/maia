@@ -3,6 +3,10 @@
 // the agent is busy. Shaped like Flue tools: defined with defineCommand(), one per
 // file in src/commands/, and mounted explicitly by each channel with createCommands().
 
+import { logger as root } from './logger.ts';
+
+const logger = root.child({ module: 'commands' });
+
 export type CommandContext<TPayload = unknown> = {
   /** The text after the command name, trimmed. Empty when there is none. */
   args: string;
@@ -63,7 +67,7 @@ export function createCommands<TPayload>(commands: CommandDefinition<TPayload>[]
       return Promise.resolve()
         .then(() => command.run({ args, ...context }))
         .catch((error) => {
-          console.error(`[commands] /${command.name} failed:`, error);
+          logger.error({ error, command: command.name }, 'command failed');
           return `/${command.name} failed.`;
         });
     },

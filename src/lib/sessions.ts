@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
-import { DATABASE_URL } from '../db.ts';
+import { type Kysely, type Selectable, sql, type Transaction } from 'kysely';
+import { type Database, db } from '../db.ts';
 
 // A chat holds sessions: threads with fresh context, each its own agent conversation.
 // New messages go to the chat's current session.
@@ -21,110 +21,123 @@ export type Session = {
 const TITLE_LENGTH = 40;
 const LIST_LENGTH = 10;
 
+// Reads and writes that depend on each other run in one transaction, so two messages
+// arriving together can't both start a session. The database has a single connection,
+// which a transaction holds until it ends: inside one, query through `trx`, never `db`,
+// or the query waits for the transaction forever.
+
 /**
  * The chat's current session, marked as used and named after `text` if it has no title
  * yet. A chat's first message starts its first session.
  */
-export function touch(chat: Chat, text: string): Session {
-  const session = current(chat) ?? create(chat);
-  const title = session.title ?? shorten(text);
-  const lastActiveAt = Date.now();
-  db()
-    .prepare('UPDATE maia_sessions SET title = ?, last_active_at = ? WHERE id = ?')
-    .run(title, lastActiveAt, session.id);
-  return { ...session, title, lastActiveAt };
+export function touch(chat: Chat, text: string): Promise<Session> {
+  return db.transaction().execute(async (trx) => {
+    const session = (await current(chat, trx)) ?? (await create(trx, chat));
+    const title = session.title ?? shorten(text);
+    const lastActiveAt = Date.now();
+    await trx
+      .updateTable('maia_sessions')
+      .set({ title, last_active_at: lastActiveAt })
+      .where('id', '=', session.id)
+      .execute();
+    return { ...session, title, lastActiveAt };
+  });
 }
 
 /** Starts a session and makes it current. A current session with no messages is reused. */
-export function start(chat: Chat): { session: Session; created: boolean } {
-  const session = current(chat);
-  if (session && !session.title) return { session, created: false };
-  return { session: create(chat), created: true };
+export function start(chat: Chat): Promise<{ session: Session; created: boolean }> {
+  return db.transaction().execute(async (trx) => {
+    const session = await current(chat, trx);
+    if (session && !session.title) return { session, created: false };
+    return { session: await create(trx, chat), created: true };
+  });
 }
 
 /** Makes the session with `ref` current. Undefined when the chat has none. */
-export function resume(chat: Chat, ref: number): Session | undefined {
-  const row = db()
-    .prepare('SELECT * FROM maia_sessions WHERE channel = ? AND chat_id = ? AND ref = ?')
-    .get(chat.channel, chat.id, ref);
-  if (!row) return undefined;
-  const session = toSession(row);
-  makeCurrent(chat, session.id);
-  return session;
+export function resume(chat: Chat, ref: number): Promise<Session | undefined> {
+  return db.transaction().execute(async (trx) => {
+    const row = await trx
+      .selectFrom('maia_sessions')
+      .selectAll()
+      .where('channel', '=', chat.channel)
+      .where('chat_id', '=', chat.id)
+      .where('ref', '=', ref)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    await makeCurrent(trx, chat, row.id);
+    return toSession(row);
+  });
 }
 
 /** The most recently used sessions, newest first. */
-export function list(chat: Chat): Session[] {
-  return db()
-    .prepare(
-      `SELECT * FROM maia_sessions WHERE channel = ? AND chat_id = ?
-       ORDER BY last_active_at DESC LIMIT ?`,
-    )
-    .all(chat.channel, chat.id, LIST_LENGTH)
-    .map(toSession);
+export async function list(chat: Chat): Promise<Session[]> {
+  const rows = await db
+    .selectFrom('maia_sessions')
+    .selectAll()
+    .where('channel', '=', chat.channel)
+    .where('chat_id', '=', chat.id)
+    .orderBy('last_active_at', 'desc')
+    .limit(LIST_LENGTH)
+    .execute();
+  return rows.map(toSession);
 }
 
-export function current(chat: Chat): Session | undefined {
-  const row = db()
-    .prepare('SELECT * FROM maia_sessions WHERE channel = ? AND chat_id = ? AND is_current = 1')
-    .get(chat.channel, chat.id);
+export async function current(
+  chat: Chat,
+  executor: Kysely<Database> = db,
+): Promise<Session | undefined> {
+  const row = await executor
+    .selectFrom('maia_sessions')
+    .selectAll()
+    .where('channel', '=', chat.channel)
+    .where('chat_id', '=', chat.id)
+    .where('is_current', '=', 1)
+    .executeTakeFirst();
   return row && toSession(row);
 }
 
-function create(chat: Chat): Session {
-  const insert = db().prepare(
-    `INSERT INTO maia_sessions (id, channel, chat_id, ref, last_active_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (channel, chat_id, ref) DO NOTHING`,
-  );
+async function create(trx: Transaction<Database>, chat: Chat): Promise<Session> {
   // Refs are random, so one can clash with another session's in the same chat.
   for (let attempt = 0; attempt < 10; attempt++) {
     const session = { id: randomUUID(), ref: randomInt(1000, 10000), lastActiveAt: Date.now() };
-    if (insert.run(session.id, chat.channel, chat.id, session.ref, session.lastActiveAt).changes) {
-      makeCurrent(chat, session.id);
+    const { numInsertedOrUpdatedRows } = await trx
+      .insertInto('maia_sessions')
+      .values({
+        id: session.id,
+        channel: chat.channel,
+        chat_id: chat.id,
+        ref: session.ref,
+        last_active_at: session.lastActiveAt,
+      })
+      .onConflict((conflict) => conflict.columns(['channel', 'chat_id', 'ref']).doNothing())
+      .executeTakeFirst();
+    if (numInsertedOrUpdatedRows) {
+      await makeCurrent(trx, chat, session.id);
       return session;
     }
   }
   throw new Error(`No free session ref in ${chat.channel} chat ${chat.id}.`);
 }
 
-function makeCurrent(chat: Chat, id: string) {
-  db()
-    .prepare('UPDATE maia_sessions SET is_current = (id = ?) WHERE channel = ? AND chat_id = ?')
-    .run(id, chat.channel, chat.id);
+async function makeCurrent(trx: Transaction<Database>, chat: Chat, id: string) {
+  await trx
+    .updateTable('maia_sessions')
+    .set({ is_current: sql<number>`(id = ${id})` })
+    .where('channel', '=', chat.channel)
+    .where('chat_id', '=', chat.id)
+    .execute();
 }
 
-function toSession(row: Record<string, unknown>): Session {
+function toSession(row: Selectable<Database['maia_sessions']>): Session {
   return {
-    id: String(row.id),
-    ref: Number(row.ref),
-    title: typeof row.title === 'string' ? row.title : undefined,
-    lastActiveAt: Number(row.last_active_at),
+    id: row.id,
+    ref: row.ref,
+    title: row.title ?? undefined,
+    lastActiveAt: row.last_active_at,
   };
 }
 
 function shorten(text: string) {
   const line = text.replace(/\s+/g, ' ').trim();
   return line.length > TITLE_LENGTH ? `${line.slice(0, TITLE_LENGTH - 1)}…` : line;
-}
-
-// Opened on first use: Flue creates the database file when it boots.
-let database: DatabaseSync | undefined;
-
-function db() {
-  if (!database) {
-    database = new DatabaseSync(DATABASE_URL);
-    // Flue writes to the same file over its own connection.
-    database.exec('PRAGMA busy_timeout = 5000');
-    database.exec(`CREATE TABLE IF NOT EXISTS maia_sessions (
-      id TEXT PRIMARY KEY,
-      channel TEXT NOT NULL,
-      chat_id TEXT NOT NULL,
-      ref INTEGER NOT NULL,
-      title TEXT,
-      last_active_at INTEGER NOT NULL,
-      is_current INTEGER NOT NULL DEFAULT 0,
-      UNIQUE (channel, chat_id, ref)
-    )`);
-  }
-  return database;
 }

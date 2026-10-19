@@ -48,17 +48,25 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY --from=build /maia/dist dist
 
+# Migrations run from source: kysely-ctl loads kysely.config.ts, which imports
+# src/db.ts, and the migration files, compiling them as it goes.
+COPY kysely.config.ts ./
+COPY src/db.ts src/db.ts
+COPY src/migrations src/migrations
+
 # Defaults for `--env-file=.env` below. Override any of them with the container
 # environment, which takes precedence over the file.
 COPY .env.dist .env
 
 USER node
 
-# src/db.ts stores conversations in ./data/flue.db (node:sqlite, relative to the
-# cwd). Mount a volume here or they're lost when the container is replaced.
+# By default src/db.ts stores conversations in ./data/flue.db (DATABASE_URL,
+# relative to the cwd). Mount a volume here or they're lost when the container is replaced.
 VOLUME ["/maia/data"]
 
 ENTRYPOINT ["tini", "--"]
-# Same command as `npm start`, without npm in between: one process fewer and
-# signals go straight from tini to node.
-CMD ["node", "--env-file=.env", "dist/server.mjs"]
+# Applies pending migrations on every start (new images bring new ones), then
+# runs the same command as `npm start`, without npm in between. `exec` replaces
+# the shell, so signals still go straight from tini to node.
+# --no-outdated-check: kysely-ctl would otherwise ask the npm registry for updates.
+CMD ["sh", "-c", "node_modules/.bin/kysely migrate:latest --no-outdated-check && exec node --env-file=.env dist/server.mjs"]
