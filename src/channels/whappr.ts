@@ -36,6 +36,11 @@ export const channel = createWhapprChannel({
     const repliesToMe = message.replyTo?.sender.isMe && !tagsOthers;
     if (message.chat.type === 'group' && !message.mentionsMe && !repliesToMe) return;
 
+    // Read receipts show the message reached the assistant. Not awaited, to keep within the 5 seconds.
+    client.chats
+      .markAsRead(message.chat.id)
+      .catch((error) => logger.warn({ error, chatId: message.chat.id }, 'mark as read failed'));
+
     const text = resolveMentions(message);
     const chat = { channel: 'whappr', id: message.chat.id };
 
@@ -60,7 +65,12 @@ export const channel = createWhapprChannel({
   },
 });
 
-async function reply(message: Message, body: string, sessionId: string) {
+// Shows "typing…" until the reply is sent, so the indicator hands over to the message.
+function reply(message: Message, body: string, sessionId: string) {
+  return client.chats.whileTyping(message.chat.id, () => respond(message, body, sessionId));
+}
+
+async function respond(message: Message, body: string, sessionId: string) {
   const agent = init(WhatsAppAssistant, { id: sessionId });
   const receipt = await agent
     .dispatch({
