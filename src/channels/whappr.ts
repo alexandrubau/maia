@@ -20,7 +20,7 @@ export const client = createWhapprClient({
   secret: requireEnv('WHAPPR_SECRET_KEY'),
 });
 
-export const groups = createGroupGuard(client, parseTrustedIds(process.env.WHAPPR_TRUSTED_IDS));
+const groups = createGroupGuard(client, parseTrustedIds(requireEnv('WHAPPR_TRUSTED_IDS')));
 
 export const channel = createWhapprChannel({
   secret: requireEnv('WHAPPR_SECRET_KEY'),
@@ -46,6 +46,9 @@ export const channel = createWhapprChannel({
     const tagsOthers = message.mentions.some((mention) => !mention.isMe);
     const repliesToMe = message.replyTo?.sender.isMe && !tagsOthers;
     if (message.chat.type === 'group' && !message.mentionsMe && !repliesToMe) return;
+
+    // Answers only in groups with a trusted member, leaving the others.
+    if (message.chat.type === 'group' && !(await groups.allows(message.chat.id))) return;
 
     // Read receipts show the message reached the assistant. Not awaited, to keep within the 5 seconds.
     client.chats
