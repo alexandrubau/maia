@@ -7,6 +7,7 @@ import { ping } from '../commands/ping.ts';
 import { resumeSession } from '../commands/resume.ts';
 import { listSessions } from '../commands/sessions.ts';
 import { createCommands } from '../lib/commands.ts';
+import { createGroupGuard, parseTrustedIds } from '../lib/groups.ts';
 import { logger as root } from '../lib/logger.ts';
 import * as sessions from '../lib/sessions.ts';
 
@@ -19,11 +20,21 @@ export const client = createWhapprClient({
   secret: requireEnv('WHAPPR_SECRET_KEY'),
 });
 
+export const groups = createGroupGuard(client, parseTrustedIds(process.env.WHAPPR_TRUSTED_IDS));
+
 export const channel = createWhapprChannel({
   secret: requireEnv('WHAPPR_SECRET_KEY'),
 
   // Path: /channels/whappr/webhook
   async event({ event }) {
+    if (event.type === 'group.joined') {
+      groups.joined(event.data);
+      return;
+    }
+    if (event.type === 'group.participant.left') {
+      groups.participantLeft(event.data);
+      return;
+    }
     if (event.type !== 'message.received') return;
 
     // The gateway waits 5 seconds for this webhook and never retries, so

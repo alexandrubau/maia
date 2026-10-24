@@ -5,7 +5,7 @@ import { createAgentRouter } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { Hello } from './agents/hello.ts';
-import { channel as whappr } from './channels/whappr.ts';
+import { groups, channel as whappr } from './channels/whappr.ts';
 import { logFlueEvent, logger } from './lib/logger.ts';
 
 observe(logFlueEvent);
@@ -66,5 +66,8 @@ app.route('/agents/hello', createAgentRouter(Hello));
 // WhatsApp via the Whappr gateway. Point the gateway's WEBHOOK_URL at
 // https://<your-app>/channels/whappr/webhook.
 app.route('/channels/whappr', whappr.route());
+
+// Leaves the groups Maia shouldn't be in, which the webhook's group events may have missed.
+groups.sweep();
 
 export default app;
